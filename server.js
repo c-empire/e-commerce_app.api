@@ -10,7 +10,7 @@ const app = express();
 app.use(express.json());
 
 // MongoDB connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/ecommerce', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://ecommerce:emperor234@node.m5ivxkf.mongodb.net/?retryWrites=true&w=majority&appName=node', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 });
