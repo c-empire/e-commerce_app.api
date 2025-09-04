@@ -4,6 +4,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const mongoosePaginate = require('mongoose-paginate-v2');
+const http = require('http');
+const { Server } = require('socket.io');
+
 dotenv.config();
 
 const app = express();
@@ -89,6 +92,33 @@ const customerMiddleware = (req, res, next) => {
   next();
 };
 
+// ========== NEW FEATURE: PROFILE ==========
+app.get('/profile', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========== NEW FEATURE: ORDER HISTORY ==========
+app.get('/order-history', authMiddleware, async (req, res) => {
+  try {
+    let query = {};
+    if (req.user.role === 'customer') {
+      query.customerId = req.user.userId;
+    }
+    const orders = await Order.find(query)
+      .populate('customerId', 'fullName email')
+      .populate('items.productId', 'productName cost');
+    res.json(orders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /brands
 app.post('/brands', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -131,7 +161,6 @@ app.delete('/brands/:id', authMiddleware, adminMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // register
 app.post('/auth/register', async (req, res) => {
@@ -178,7 +207,6 @@ app.post('/auth/login', async (req, res) => {
     res.status(500).json({ message: 'Error logging in', error: error.message });
   }
 });
-
 
 // get the products
 app.get('/products', async (req, res) => {
@@ -245,20 +273,36 @@ app.delete('/products/:id', authMiddleware, adminMiddleware, async (req, res) =>
   }
 });
 
-
-// creating an order (Customer only)
+// Create an order (customer only)
 app.post('/orders', authMiddleware, customerMiddleware, async (req, res) => {
   try {
-    const { items, shippingStatus } = req.body;
+    const { items } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Items must be a non-empty array' });
     }
 
+    const orderItems = [];
+
+    for (const item of items) {
+      const product = await ProductModel.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({ message: `Product not found: ${item.productId}` });
+      }
+
+      orderItems.push({
+        productId: product._id,
+        productName: product.productName,
+        ownerId: product.ownerId,
+        quantity: item.quantity,
+        totalCost: product.cost * item.quantity
+      });
+    }
+
     const order = new Order({
       customerId: req.user.userId,
-      items,
-      shippingStatus: shippingStatus || 'pending'
+      items: orderItems,
+      shippingStatus: 'pending'
     });
 
     await order.save();
@@ -268,7 +312,7 @@ app.post('/orders', authMiddleware, customerMiddleware, async (req, res) => {
   }
 });
 
-// Admin - Get all tge orders
+// Admin - Get all the orders
 app.get('/orders', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const orders = await Order.find()
@@ -295,7 +339,34 @@ app.get('/orders/:id', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-// Admin - Update order shipping status
+// ========== SOCKET.IO SETUP ==========
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] }
+});
+
+const onlineUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log("User connected:", socket.id);
+
+  socket.on('register', (userId) => {
+    onlineUsers.set(userId, socket.id);
+    console.log(`User registered: ${userId} → ${socket.id}`);
+  });
+
+  socket.on('disconnect', () => {
+    for (const [userId, id] of onlineUsers.entries()) {
+      if (id === socket.id) {
+        onlineUsers.delete(userId);
+        break;
+      }
+    }
+    console.log("User disconnected:", socket.id);
+  });
+});
+
+// Admin - Update order shipping status (with notification)
 app.put('/orders/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { shippingStatus } = req.body;
@@ -308,9 +379,20 @@ app.put('/orders/:id', authMiddleware, adminMiddleware, async (req, res) => {
       req.params.id,
       { shippingStatus },
       { new: true }
-    );
+    ).populate('customerId', 'fullName email');
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    // Notify customer if online
+    const customerId = order.customerId._id.toString();
+    const socketId = onlineUsers.get(customerId);
+
+    if (socketId) {
+      io.to(socketId).emit('notification', {
+        title: "New shipping status",
+        message: `Your last order shipping status has been updated to ${shippingStatus}`
+      });
+    }
 
     res.json(order);
   } catch (err) {
@@ -318,7 +400,6 @@ app.put('/orders/:id', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
+server.listen(3000, () => {
   console.log("server has started on port 3000");
 });
-
