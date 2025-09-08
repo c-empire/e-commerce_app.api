@@ -1,37 +1,8 @@
-const express = require('express');
-const Order = require('../models/Orders');
+const Order = require('../models/Order');
 const Product = require('../models/Product');
-const User = require('../models/User');
-const authMiddleware = require('../middleware/authMiddleware');
-const adminMiddleware = require('../middleware/adminMiddleware');
-const customerMiddleware = require('../middleware/customerMiddleware');
-
-const router = express.Router();
-
-// Get user profile
-router.get('/profile', authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Admin profile
-router.get('/admin/profile', authMiddleware, adminMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) return res.status(404).json({ message: 'Admin not found' });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // Create order (customer only)
-router.post('/', authMiddleware, customerMiddleware, async (req, res) => {
+exports.createOrder = async (req, res) => {
   try {
     const { items } = req.body;
 
@@ -67,10 +38,37 @@ router.post('/', authMiddleware, customerMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Error creating order', error: err.message });
   }
-});
+};
 
-// Get order history (customer sees their own orders, admin sees all)
-router.get('/order-history', authMiddleware, async (req, res) => {
+// Get all orders (admin)
+exports.getAllOrders = async (req, res) => {
+  try {
+    const orders = await Order.find()
+      .populate('customerId', 'fullName email')
+      .populate('items.productId', 'productName cost');
+    res.json(orders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get single order (admin)
+exports.getOrderById = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('customerId', 'fullName email')
+      .populate('items.productId', 'productName cost');
+
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    res.json(order);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get order history (customer or admin)
+exports.getOrderHistory = async (req, res) => {
   try {
     let query = {};
     if (req.user.role === 'customer') {
@@ -83,38 +81,13 @@ router.get('/order-history', authMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+};
 
-// Admin - get all orders
-router.get('/', authMiddleware, adminMiddleware, async (req, res) => {
-  try {
-    const orders = await Order.find()
-      .populate('customerId', 'fullName email')
-      .populate('items.productId', 'productName cost');
-    res.json(orders);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Admin - get single order
-router.get('/:id', authMiddleware, adminMiddleware, async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id)
-      .populate('customerId', 'fullName email')
-      .populate('items.productId', 'productName cost');
-
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-    res.json(order);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Admin - update shipping status + notify
-router.put('/:id', authMiddleware, adminMiddleware, async (req, res) => {
+// Update shipping status (admin only + socket notification)
+exports.updateShippingStatus = async (req, res) => {
   try {
     const { shippingStatus } = req.body;
+
     if (!['pending', 'shipped', 'delivered'].includes(shippingStatus)) {
       return res.status(400).json({ message: 'Invalid shipping status' });
     }
@@ -127,14 +100,11 @@ router.put('/:id', authMiddleware, adminMiddleware, async (req, res) => {
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    // Notify customer if online
-    const io = req.app.get('io');
-    const onlineUsers = req.app.get('onlineUsers');
     const customerId = order.customerId._id.toString();
     const socketId = onlineUsers.get(customerId);
 
     if (socketId) {
-      io.to(socketId).emit('notification', {
+      req.io.to(socketId).emit('notification', {
         title: "New shipping status",
         message: `Your last order shipping status has been updated to ${shippingStatus}`
       });
@@ -144,6 +114,4 @@ router.put('/:id', authMiddleware, adminMiddleware, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-module.exports = router;
+};

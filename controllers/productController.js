@@ -1,4 +1,5 @@
-const Product = require('../models/product');
+import Product from '../models/Product';
+import mongoose from 'mongoose';
 
 exports.getProducts = async (req, res) => {
   try {
@@ -49,16 +50,26 @@ exports.createProduct = async (req, res) => {
 
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: 'Product not found' });
+    const { id } = req.params;
+
+    // Check if id is a valid ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid product ID' });
+    }
+
+    const product = await Product.findById(id);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
 
     if (product.ownerId.toString() !== req.user.userId) {
       return res.status(403).json({ message: 'Not authorized to delete this product' });
     }
 
-    await Product.findByIdAndDelete(req.params.id);
+    await Product.findByIdAndDelete(id);
     res.json({ message: 'Product deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Error deleting product', error: err.message });
   }
 };
+
